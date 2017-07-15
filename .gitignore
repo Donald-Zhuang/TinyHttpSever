@@ -1,0 +1,4 @@
+sever
+client
+*.o
+*.out
