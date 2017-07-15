@@ -14,6 +14,18 @@
 #include "netinet/in.h"
 #include "unistd.h"    
 #include "pthread.h"
+#include "ctype.h"
+
+#define DEBUG_ENABLE (1)
+
+int error_die(const char *errmsg)
+{
+    #if DEBUG_ENABLE
+    printf("%s\n", errmsg);
+    #endif
+    perror(errmsg);
+    exit(1);
+}
 
 int startup(u_short *port)
 {
@@ -23,32 +35,30 @@ int startup(u_short *port)
     httpd = socket(PF_INET, SOCK_STREAM, 0);
     if( httpd == -1 )
     {
-        printf("socket error\n");
-        return -1;
+        error_die("socket failed");
     }
+
     memset(&name, 0, sizeof(name));
     name.sin_family = AF_INET;
     name.sin_port   = htons(*port);
     name.sin_addr.s_addr = htonl(INADDR_ANY);
     if( bind(httpd,(const struct sockaddr *)&name, sizeof(name) ) < 0 )
     {
-        printf("bind error\n");
-        return -1;
+        error_die("bind failed");
     }
+
     if(*port == 0)
     {
         int namelen = sizeof(name);
         if( getsockname(httpd, (struct sockaddr *)&name, &namelen) == -1 )
         {
-            printf("getsockname error\n");
-            return -1;
+            error_die("getsockname failed");
         }
         *port = ntohs(name.sin_port);
     }
     if( listen(httpd, 5) < 0 )
     {
-        printf("listen error\n");
-        return -1;
+        error_die("listen failed");
     }
     return httpd;
 }
@@ -107,6 +117,8 @@ void *accept_request(void *pclient)
 
     numofchars = sock_getline(client, buf, sizeof(buf));
     buf[numofchars] = '\0';
+
+#if DEBUG_ENABLE
     if(numofchars != 0)
     {
         printf("accept string: %s\n", buf);
@@ -115,7 +127,30 @@ void *accept_request(void *pclient)
     {
         printf("accept nothing\n");
     }
+#endif
 
+    int i = 0, j = 0;
+    char method[1024] = {0, };
+
+    while( !isspace(buf[i]) && i < (sizeof(method) - 1) )
+    {
+        method[j] = buf[i];
+        i++;
+        j++;
+    }
+    method[i] = '\0';
+    
+    if( strcasecmp(method, "GET") && strcasecmp(method, "POST") )
+    {
+        printf("This is a wrong request!\n");
+        close(client);
+        return ;
+    }
+    int cgi = 0;
+    if( !strcasecmp(method, "POST") )
+    {
+        cgi = 1;
+    }
     close(client);
 }
 int main(int argc,char *argv[])
@@ -136,13 +171,11 @@ int main(int argc,char *argv[])
                             &client_name_len);
        if(client_sock == -1)
        {
-           printf("accept error\n");
-           return -1;
+           error_die("accept failed");
        }
        if(pthread_create(&newthread, NULL, accept_request, (void *)&client_sock) != 0)
        {
-           printf("pthread_create error\n");
-           return -1;
+           error_die("pthread_create failed");
        }
     }
 
