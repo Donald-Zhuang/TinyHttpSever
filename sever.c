@@ -1,7 +1,7 @@
 /***********************************************************/
 //     File Name   : main.c
 //     Author      : Donald Zhuang
-//     E-Mail      : 
+//     E-Mail      :
 //     Create Time : Thu 13 Jul 2017 05:27:22 PM PDT
 /**********************************************************/
 
@@ -12,9 +12,10 @@
 #include "string.h"
 #include "stdlib.h"
 #include "netinet/in.h"
-#include "unistd.h"    
+#include "unistd.h"
 #include "pthread.h"
 #include "ctype.h"
+#include "sys/stat.h"
 
 #define DEBUG_ENABLE (1)
 
@@ -108,48 +109,132 @@ int sock_getline(int sock, char *buf, unsigned int size)
     buf[i] = '\0';
     return i;
 }
-
-void *accept_request(void *pclient)
+void not_found(int client)
 {
     char buf[1024];
-    unsigned int numofchars = 0;
+
+    sprintf(buf, "HTTP/1.0 404 NOT FOUND\r\n");
+    send(client, buf, strlen(buf), 0);
+    sprintf(buf, "Server: jdbhttpd/0.1.0\r\n");
+    send(client, buf, strlen(buf), 0);
+    sprintf(buf, "Content-Type: text/html\r\n");
+    send(client, buf, strlen(buf), 0);
+    sprintf(buf, "\r\n");
+    send(client, buf, strlen(buf), 0);
+    sprintf(buf, "<HTML><TITLE>Not Found</TITLE>\r\n");
+    send(client, buf, strlen(buf), 0);
+    sprintf(buf, "<BODY><P>The sever couldn't fullfill\r\n");
+    send(client, buf, strlen(buf), 0);
+    sprintf(buf, "your request because the resource specified\r\n");
+    send(client, buf, strlen(buf), 0);
+    sprintf(buf, "is unavailabe or nonexistent.</P>\r\n");
+    send(client, buf, strlen(buf), 0);
+    sprintf(buf, "</BODY></HTML>\r\n");
+    send(client, buf, strlen(buf), 0);
+}
+void serve_file( int client, char *path )
+{
+
+}
+void execute_cgi( int client, char *path, char *method, char *query_string )
+{
+
+}
+void *accept_request(void *pclient)
+{
     int client = *(int*)pclient;
+    char buf[1024];
+    char method[1024] = {0, };
+    char url[255] = {0, };
+    char path[255] = {0, };
+    char *query_string = NULL;
+    struct stat st;
+    int i = 0, j = 0, cgi = 0;
+    unsigned int numofchars = 0;
 
     numofchars = sock_getline(client, buf, sizeof(buf));
     buf[numofchars] = '\0';
 
 #if DEBUG_ENABLE
-    if(numofchars != 0)
-    {
-        printf("accept string: %s\n", buf);
-    }
-    else
-    {
-        printf("accept nothing\n");
-    }
+    printf("recieve : %s", numofchars == 0 ? "NULL" : buf);
 #endif
 
-    int i = 0, j = 0;
-    char method[1024] = {0, };
-
+    /*get the method and whether it's valid*/
     while( !isspace(buf[i]) && i < (sizeof(method) - 1) )
     {
-        method[j] = buf[i];
-        i++;
-        j++;
+        method[j++] = buf[i++];
     }
     method[i] = '\0';
-    
     if( strcasecmp(method, "GET") && strcasecmp(method, "POST") )
     {
         printf("This is a wrong request!\n");
         close(client);
         return ;
     }
-    int cgi = 0;
-    if( !strcasecmp(method, "POST") )
+    
+    /* if the method is POST, the CGI should be executed */
+    cgi = strcasecmp(method, "POST") == 0 ? 1 : 0;
+
+    /* get the url */
+    while( isspace(buf[j]) && (j++ < sizeof(buf)) )
+        ;
+    i = 0;
+    while( !isspace(buf[j]) && (i < sizeof(url) - 1) && (j < sizeof(buf)) )
     {
-        cgi = 1;
+        url[i++] = buf[j++];
+    }
+    url[i] = '\0';
+
+    /* process the request */
+    if(cgi == 0) /* method : GET */
+    {
+        query_string = url;
+        while( (*query_string != '?') && (*query_string != '\0') )
+        {
+            query_string++;
+        }
+        if (*query_string == '?') /* should be process by CGI */
+        {
+            cgi = 1;
+            *query_string = '\0';
+            query_string++;
+        }
+    }
+
+    /* check whether the file exist */
+    sprintf(path, "htdocs%s", url);
+    if(path[strlen(path) - 1] == '/')
+    {
+        strcat(path, "index.html");
+    }
+    if(stat(path, &st) == -1)
+    {
+        while( (numofchars > 0) && strcmp("\n", buf) )
+        {
+            numofchars = sock_getline(client, buf, sizeof(buf));
+        }
+        not_found(client);
+    }
+    else
+    {
+        if( (st.st_mode & S_IFMT) == S_IFDIR )
+        {
+            strcat(path, "/index.html");
+            if( (st.st_mode & S_IXUSR ) || 
+                (st.st_mode & S_IXGRP ) ||
+                (st.st_mode & S_IXOTH ) )
+            {
+                cgi = 1;
+            }
+        }
+        if (cgi == 0)
+        {
+            serve_file(client, path);
+        }
+        else
+        {
+            execute_cgi(client, path, method, query_string);
+        }
     }
     close(client);
 }
