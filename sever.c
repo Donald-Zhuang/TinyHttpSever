@@ -18,7 +18,7 @@
 #include "sys/stat.h"
 
 #define DEBUG_ENABLE (1)
-
+#define SERVER_STRING "Server: jdbhttpd/0.1.0\r\n"
 int error_die(const char *errmsg)
 {
     #if DEBUG_ENABLE
@@ -109,33 +109,74 @@ int sock_getline(int sock, char *buf, unsigned int size)
     buf[i] = '\0';
     return i;
 }
+
+void send_str(int client, const char *str)
+{
+    unsigned int ret = send(client, str, strlen(str), 0);
+#if DEBUG_ENABLE
+    ret == strlen(str) ?  0 : printf("send_str error[ret = 0x%02x].\r\n", ret);
+#endif
+}
+
 void not_found(int client)
 {
     char buf[1024];
 
-    sprintf(buf, "HTTP/1.0 404 NOT FOUND\r\n");
-    send(client, buf, strlen(buf), 0);
-    sprintf(buf, "Server: jdbhttpd/0.1.0\r\n");
-    send(client, buf, strlen(buf), 0);
-    sprintf(buf, "Content-Type: text/html\r\n");
-    send(client, buf, strlen(buf), 0);
-    sprintf(buf, "\r\n");
-    send(client, buf, strlen(buf), 0);
-    sprintf(buf, "<HTML><TITLE>Not Found</TITLE>\r\n");
-    send(client, buf, strlen(buf), 0);
-    sprintf(buf, "<BODY><P>The sever couldn't fullfill\r\n");
-    send(client, buf, strlen(buf), 0);
-    sprintf(buf, "your request because the resource specified\r\n");
-    send(client, buf, strlen(buf), 0);
-    sprintf(buf, "is unavailabe or nonexistent.</P>\r\n");
-    send(client, buf, strlen(buf), 0);
-    sprintf(buf, "</BODY></HTML>\r\n");
-    send(client, buf, strlen(buf), 0);
+    send_str(client, "HTTP/1.0 404 NOT FOUND\r\n");
+    send_str(client, SERVER_STRING);
+    send_str(client, "Content-Type: text/html\r\n");
+    send_str(client, "\r\n");
+    send_str(client, "<HTML><TITLE>NOT FOUND</TITLE>"
+                     "<BODY><P> the sever couldn't fullfill"
+                     "your request because the resource specified"
+                     "is unavailable or nonexistence."
+                     "</BODY></HTML>\r\n");
 }
-void serve_file( int client, char *path )
+void headers( int client, const char *filename )
 {
-
+    char buf[1024];
+    (void)filename;
+    send_str(client, "HTTP/1.0 200 OK\r\n");
+    send_str(client, SERVER_STRING);
+    send_str(client, "Content-Type: text/html\r\n");
+    send_str(client, "\r\n");
 }
+void cat( int client, FILE *resource )
+{
+    char buf[1024];
+
+    fgets( buf, sizeof(buf), resource );
+    while(!feof(resource))
+    {
+        send(client, buf, strlen(buf), 0);
+        fgets(buf, sizeof(buf), resource);
+    }
+}
+void serve_file( int client, const char *filename )
+{
+    FILE *resource = NULL;
+    int numofchars = 1;
+    char buf[1024] = {'A', '\0',};
+
+    /* read & discard headers */
+    while( (numofchars > 0) && strcmp("\n", buf) )
+    {
+        numofchars = sock_getline( client, buf, sizeof(buf) );
+    }
+
+    resource = fopen(filename, "r");
+    if( resource == NULL )
+    {
+        not_found(client);
+    }
+    else
+    {
+        headers(client, filename);
+        cat(client, resource);
+    }
+    fclose(resource);
+}
+
 void execute_cgi( int client, char *path, char *method, char *query_string )
 {
 
@@ -144,7 +185,7 @@ void *accept_request(void *pclient)
 {
     int client = *(int*)pclient;
     char buf[1024];
-    char method[1024] = {0, };
+    char method[255] = {0, };
     char url[255] = {0, };
     char path[255] = {0, };
     char *query_string = NULL;
@@ -153,10 +194,9 @@ void *accept_request(void *pclient)
     unsigned int numofchars = 0;
 
     numofchars = sock_getline(client, buf, sizeof(buf));
-    buf[numofchars] = '\0';
 
 #if DEBUG_ENABLE
-    printf("recieve : %s", numofchars == 0 ? "NULL" : buf);
+    printf("recieve : %s", numofchars == 0 ? "NULL\r\n" : buf);
 #endif
 
     /*get the method and whether it's valid*/
@@ -171,7 +211,7 @@ void *accept_request(void *pclient)
         close(client);
         return ;
     }
-    
+
     /* if the method is POST, the CGI should be executed */
     cgi = strcasecmp(method, "POST") == 0 ? 1 : 0;
 
@@ -184,7 +224,7 @@ void *accept_request(void *pclient)
         url[i++] = buf[j++];
     }
     url[i] = '\0';
-
+    printf("%s\r\n", url);
     /* process the request */
     if(cgi == 0) /* method : GET */
     {
@@ -203,6 +243,7 @@ void *accept_request(void *pclient)
 
     /* check whether the file exist */
     sprintf(path, "htdocs%s", url);
+    printf("%s\r\n", path);
     if(path[strlen(path) - 1] == '/')
     {
         strcat(path, "index.html");
@@ -220,12 +261,13 @@ void *accept_request(void *pclient)
         if( (st.st_mode & S_IFMT) == S_IFDIR )
         {
             strcat(path, "/index.html");
-            if( (st.st_mode & S_IXUSR ) || 
-                (st.st_mode & S_IXGRP ) ||
-                (st.st_mode & S_IXOTH ) )
-            {
-                cgi = 1;
-            }
+
+        }
+        if( (st.st_mode & S_IXUSR ) ||
+            (st.st_mode & S_IXGRP ) ||
+            (st.st_mode & S_IXOTH ) )
+        {
+            cgi = 1;
         }
         if (cgi == 0)
         {
