@@ -21,9 +21,6 @@
 #define SERVER_STRING "Server: jdbhttpd/0.1.0\r\n"
 int error_die(const char *errmsg)
 {
-    #if DEBUG_ENABLE
-    printf("%s\n", errmsg);
-    #endif
     perror(errmsg);
     exit(1);
 }
@@ -66,7 +63,7 @@ int startup(u_short *port)
 
 int cleanup(int sock)
 {
-    close(sock);
+    return close(sock);
 }
 
 int sock_getline(int sock, char *buf, unsigned int size)
@@ -89,7 +86,7 @@ int sock_getline(int sock, char *buf, unsigned int size)
             if(ch == '\r')
             {
                 n = recv(sock, &ch, 1, MSG_PEEK);
-                if( (n > 0) && (ch != '\n') )
+                if( (n > 0) && (ch == '\n') )
                 {
                     recv(sock, &ch, 1, 0);
                 }
@@ -120,8 +117,6 @@ void send_str(int client, const char *str)
 
 void not_found(int client)
 {
-    char buf[1024];
-
     send_str(client, "HTTP/1.0 404 NOT FOUND\r\n");
     send_str(client, SERVER_STRING);
     send_str(client, "Content-Type: text/html\r\n");
@@ -134,7 +129,6 @@ void not_found(int client)
 }
 void headers( int client, const char *filename )
 {
-    char buf[1024];
     (void)filename;
     send_str(client, "HTTP/1.0 200 OK\r\n");
     send_str(client, SERVER_STRING);
@@ -167,10 +161,12 @@ void serve_file( int client, const char *filename )
     resource = fopen(filename, "r");
     if( resource == NULL )
     {
+        printf("not_found\r\n");
         not_found(client);
     }
     else
     {
+        printf("found file here\r\n");
         headers(client, filename);
         cat(client, resource);
     }
@@ -200,7 +196,7 @@ void *accept_request(void *pclient)
 #endif
 
     /*get the method and whether it's valid*/
-    while( !isspace(buf[i]) && i < (sizeof(method) - 1) )
+    while( !isspace((int)buf[i]) && (i < sizeof(method) - 1) )
     {
         method[j++] = buf[i++];
     }
@@ -216,10 +212,10 @@ void *accept_request(void *pclient)
     cgi = strcasecmp(method, "POST") == 0 ? 1 : 0;
 
     /* get the url */
-    while( isspace(buf[j]) && (j++ < sizeof(buf)) )
+    while( isspace((int)buf[j]) && (j++ < sizeof(buf)) )
         ;
     i = 0;
-    while( !isspace(buf[j]) && (i < sizeof(url) - 1) && (j < sizeof(buf)) )
+    while( !isspace((int)buf[j]) && (i < sizeof(url) - 1) && (j < sizeof(buf)) )
     {
         url[i++] = buf[j++];
     }
@@ -243,11 +239,15 @@ void *accept_request(void *pclient)
 
     /* check whether the file exist */
     sprintf(path, "htdocs%s", url);
-    printf("%s\r\n", path);
     if(path[strlen(path) - 1] == '/')
     {
         strcat(path, "index.html");
     }
+
+#if DEBUG_ENABLE
+    printf("request path: %s\r\n", path);
+#endif
+
     if(stat(path, &st) == -1)
     {
         while( (numofchars > 0) && strcmp("\n", buf) )
@@ -269,6 +269,11 @@ void *accept_request(void *pclient)
         {
             cgi = 1;
         }
+
+#if DEBUG_ENABLE
+        printf("cgi[%d]: goto %s\r\n", cgi, cgi == 0 ? "serve_file":"execute_cgi");
+#endif
+
         if (cgi == 0)
         {
             serve_file(client, path);
@@ -280,6 +285,7 @@ void *accept_request(void *pclient)
     }
     close(client);
 }
+
 int main(int argc,char *argv[])
 {
     int sever_sock = -1;
@@ -291,6 +297,7 @@ int main(int argc,char *argv[])
 
     sever_sock = startup(&port);
     printf("httpd running on port %d\n", port);
+
     while(1)
     {
        client_sock = accept(sever_sock,
@@ -302,7 +309,7 @@ int main(int argc,char *argv[])
        }
        if(pthread_create(&newthread, NULL, accept_request, (void *)&client_sock) != 0)
        {
-           error_die("pthread_create failed");
+           perror("pthread_create failed");
        }
     }
 
