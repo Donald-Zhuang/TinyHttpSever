@@ -117,6 +117,10 @@ void send_str(int client, const char *str)
 
 void not_found(int client)
 {
+#if DEBUG_ENABLE
+        printf("not found.\r\n");
+#endif
+
     send_str(client, "HTTP/1.0 404 NOT FOUND\r\n");
     send_str(client, SERVER_STRING);
     send_str(client, "Content-Type: text/html\r\n");
@@ -172,10 +176,117 @@ void serve_file( int client, const char *filename )
     }
     fclose(resource);
 }
-
-void execute_cgi( int client, char *path, char *method, char *query_string )
+void bad_request(int client)
 {
+#if DEBUG_ENABLE
+    printf("bad request.\r\n");
+#endif
+    send_str(client, "HTTP/1.0 400 BAD REQUEST\r\n");
+    send_str(client, "Content-Type: text/html\r\n");
+    send_str(client, "\r\n");
+    send_str(client, "<P> Your browse sent a bad request,"
+            "such as a POST without a Content-Length.\r\n");
+}
+void cannot_execute(int client)
+{
+#if DEBUG_ENABLE
+        printf("can not execute.\r\n");
+#endif
 
+    send_str(client, "HTTP/1.0 500 Internal Server Error\r\n");
+    send_str(client, "Content-Type: text/html\r\n");
+    send_str(client, "\r\n");
+    send_str(client, "<p>error prohibited CGI execution.\r\n");
+}
+void execute_cgi( int client, const char *path, const char *method, const char *query_string )
+{
+    char buf[1024]= {'A', 0,};
+    int cgi_in[2]={0,0}, cgi_out[2] = {0,0};
+    unsigned int content_length = -1, numofchars = 1;
+    char ch = '\0';
+    pid_t pid = -1;
+    int i = 0, status;
+
+    if (strcasecmp(method, "GET") == 0)
+    {
+        while( (numofchars > 0) && strcmp("\n",buf) ) //clean the header
+        {
+            sock_getline(client, buf, sizeof(buf));
+        }
+    }
+    else
+    {
+        while((numofchars > 0) && strcmp(buf, "\n"))
+        {
+            buf[14] = '\0';
+            if( 0 == strcasecmp(buf, "content-length") )
+            {
+                content_length = atoi(&buf[16]);
+            }
+            numofchars = sock_getline(client, buf, sizeof(buf));
+        }
+        if(content_length == -1)
+        {
+            bad_request(client);
+            return ;
+        }
+    }
+    send_str(client, "HTTP/1.0 200 OK\r\n");
+
+    if( (pipe(cgi_out) < 0) || (pipe(cgi_in) < 0) )
+    {
+        cannot_execute(client);
+        return ;
+    }
+
+    if( (pid = fork()) < 0 )
+    {
+        cannot_execute(client);
+        return ;
+    }
+
+#define DEFINE_STDIN    (0)
+#define DEFINE_STDOUT   (1)
+#define DEFINE_STDERR   (2)
+
+    if(pid == 0)
+    {
+        char meth_env[255], query_env[255], length_env[255];
+        dup2(cgi_out[1], DEFINE_STDOUT);
+        close(cgi_out[0]);
+        dup2(cgi_in[0], 0);
+        close(cgi_out[1]);
+
+        sprintf(meth_env, "REQUEST_METHOD=%s", method);
+        putenv(meth_env);
+
+        if( strcasecmp(method,"GET") == 0 )
+        {
+            sprintf(query_env, "QUERY_STRING=%s", query_string);
+            putenv(query_env);
+        }else{
+            sprintf(length_env, "CONTENT_LENGTH=%d", content_length);
+            putenv(length_env);
+        }
+        execl(path, path, NULL);
+        exit(0);
+    }else{
+        close(cgi_in[0]);
+        close(cgi_out[1]);
+        if(strcasecmp(method, "POST") == 0)
+        {
+            for(i = 0; i < content_length; i++)
+            {
+                recv(client, &ch, 1, 0);
+                write(cgi_in[1], &ch, 1);
+            }
+        }
+        while(read(cgi_out[0], &ch, 1) > 0)
+            send(client, &ch, 1, 0);
+        close(cgi_out[0]);
+        close(cgi_in[1]);
+        waitpid(pid, &status, 0);
+    }
 }
 void *accept_request(void *pclient)
 {
