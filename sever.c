@@ -30,7 +30,7 @@ int startup(u_short *port)
     int httpd = 0;
     struct sockaddr_in name;
 
-    httpd = socket(PF_INET, SOCK_STREAM, 0);
+    httpd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
     if( httpd == -1 )
     {
         error_die("socket failed");
@@ -120,7 +120,6 @@ void not_found(int client)
 #if DEBUG_ENABLE
         printf("not found.\r\n");
 #endif
-
     send_str(client, "HTTP/1.0 404 NOT FOUND\r\n");
     send_str(client, SERVER_STRING);
     send_str(client, "Content-Type: text/html\r\n");
@@ -165,12 +164,10 @@ void serve_file( int client, const char *filename )
     resource = fopen(filename, "r");
     if( resource == NULL )
     {
-        printf("not_found\r\n");
         not_found(client);
     }
     else
     {
-        printf("found file here\r\n");
         headers(client, filename);
         cat(client, resource);
     }
@@ -192,7 +189,6 @@ void cannot_execute(int client)
 #if DEBUG_ENABLE
         printf("can not execute.\r\n");
 #endif
-
     send_str(client, "HTTP/1.0 500 Internal Server Error\r\n");
     send_str(client, "Content-Type: text/html\r\n");
     send_str(client, "\r\n");
@@ -254,7 +250,7 @@ void execute_cgi( int client, const char *path, const char *method, const char *
         char meth_env[255], query_env[255], length_env[255];
         dup2(cgi_out[1], DEFINE_STDOUT);
         close(cgi_out[0]);
-        dup2(cgi_in[0], 0);
+        dup2(cgi_in[0], DEFINE_STDIN);
         close(cgi_out[1]);
 
         sprintf(meth_env, "REQUEST_METHOD=%s", method);
@@ -270,7 +266,9 @@ void execute_cgi( int client, const char *path, const char *method, const char *
         }
         execl(path, path, NULL);
         exit(0);
-    }else{
+    }
+    else
+    {
         close(cgi_in[0]);
         close(cgi_out[1]);
         if(strcasecmp(method, "POST") == 0)
@@ -279,10 +277,18 @@ void execute_cgi( int client, const char *path, const char *method, const char *
             {
                 recv(client, &ch, 1, 0);
                 write(cgi_in[1], &ch, 1);
+                #if DEBUG_ENABLE
+                    printf("%c", ch);
+                #endif
             }
         }
         while(read(cgi_out[0], &ch, 1) > 0)
+        {
+        #if DEBUG_ENABLE
+            printf("%c", ch);
+        #endif
             send(client, &ch, 1, 0);
+        }
         close(cgi_out[0]);
         close(cgi_in[1]);
         waitpid(pid, &status, 0);
@@ -314,8 +320,7 @@ void *accept_request(void *pclient)
     method[i] = '\0';
     if( strcasecmp(method, "GET") && strcasecmp(method, "POST") )
     {
-        printf("This is a wrong request!\n");
-        close(client);
+        bad_request(client);
         return ;
     }
 
@@ -331,7 +336,9 @@ void *accept_request(void *pclient)
         url[i++] = buf[j++];
     }
     url[i] = '\0';
-    printf("%s\r\n", url);
+#if DEBUG_ENABLE
+    printf("Browser Request-URL: %s\r\n", url);
+#endif
     /* process the request */
     if(cgi == 0) /* method : GET */
     {
@@ -356,7 +363,7 @@ void *accept_request(void *pclient)
     }
 
 #if DEBUG_ENABLE
-    printf("request path: %s\r\n", path);
+    printf("Request-Path: %s\r\n", path);
 #endif
 
     if(stat(path, &st) == -1)
@@ -372,7 +379,6 @@ void *accept_request(void *pclient)
         if( (st.st_mode & S_IFMT) == S_IFDIR )
         {
             strcat(path, "/index.html");
-
         }
         if( (st.st_mode & S_IXUSR ) ||
             (st.st_mode & S_IXGRP ) ||
