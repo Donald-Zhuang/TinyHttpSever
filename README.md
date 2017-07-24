@@ -274,7 +274,7 @@ void execute_cgi( int client, const char *path, const char *method, const char *
         }
     }
     // 响应报文，返回正确响应码200
-    send_str(client, "HTTP/1.0 200 OK\r\n");
+    send_str(client, "HTTP/1.0 200 OK\r\n"); // 响应报文起始行组成： HTTP-Version Status-Code Reason-Phrase
  
     //pipe操作必须在fork之前，这边子进程才能继承到两组文件描述符，实现父子进程之间的通讯
     if( (pipe(cgi_out) < 0) || (pipe(cgi_in) < 0) )
@@ -345,3 +345,156 @@ void execute_cgi( int client, const char *path, const char *method, const char *
     }
 }
 ```
+##### 文件发送实现
+``` C
+void cat( int client, FILE *resource )
+{
+    char buf[1024];
+ 
+    fgets( buf, sizeof(buf), resource );      // 读取1024bytes数据
+    while(!feof(resource))                    // 如果文件未EOF则继续读
+    {
+        send(client, buf, strlen(buf), 0);    // socket传输数据
+        fgets(buf, sizeof(buf), resource);
+    }
+}
+
+void serve_file( int client, const char *filename )
+{
+    FILE *resource = NULL;
+    int numofchars = 1;
+    char buf[1024] = {'A', '\0',};
+ 
+    /* read & discard headers */
+    while( (numofchars > 0) && strcmp("\n", buf) )
+    {
+        numofchars = sock_getline( client, buf, sizeof(buf) ); // 清除请求头。
+    }
+ 
+    resource = fopen(filename, "r");    // 打开文件读取
+    if( resource == NULL )
+    {
+        not_found(client);              // 资源未找到或无法访问
+    }
+    else
+    {
+        headers(client, filename);      // 发送服务器响应报文首部
+        cat(client, resource);          // 发送服务器响应实体主体
+    }
+    fclose(resource);                   // 释放资源
+}
+```
+##### 相关函数实现
+
+1、获取客户端请求报文的一行内容
+``` C
+int sock_getline(int sock, char *buf, unsigned int size)
+{
+    int i = 0;
+    char ch = '\0';
+    int n = 0;
+ 
+    if((buf == NULL) && (size == 0) && (sock == -1)) // 参数合法性检查
+    {
+        printf("parameter error, please check %s[%d]\n", __func__, __LINE__);
+        return -1;
+    }
+ 
+    while( (i < size - 1) && (ch != '\n') ) // \n是行结束标志
+    {
+        n = recv(sock, &ch, 1, 0);
+        if(n > 0)
+        {
+            if(ch == '\r')
+            {
+                n = recv(sock, &ch, 1, MSG_PEEK);    // MSG_PEEK可实现下次读到的，仍是此次读取到的内容
+                if( (n > 0) && (ch == '\n') )        // 若读取到的\r\n，则此次读取结束，读取到的字符为\n
+                {
+                    recv(sock, &ch, 1, 0);
+                }
+                else
+                {
+                    ch = '\n';                       // 否则设定读取的字符为\n，读取结束
+                }
+            }
+            buf[i] = ch;
+            i++;
+        }
+        else
+        {
+            ch = '\n';
+        }
+    }
+    buf[i] = '\0';
+    return i;
+}
+```
+
+2、服务器响应报文实现
+为方便代码编写和阅读，我在tinyhttpd的基础上实现了下面这个函数，专门用于发送字符到socket
+```
+void send_str(int client, const char *str)
+{
+    unsigned int ret = send(client, str, strlen(str), 0);
+#if DEBUG_ENABLE
+    ret == strlen(str) ?  0 : printf("send_str error[ret = 0x%02x].\r\n", ret);
+#endif
+}
+```
+
+```
+/*发送文件前的响应头*/
+void headers( int client, const char *filename )
+{
+    (void)filename;
+    send_str(client, "HTTP/1.0 200 OK\r\n");          // 2**表示执行成功，200表示请求被正常处理
+    send_str(client, SERVER_STRING);
+    send_str(client, "Content-Type: text/html\r\n");  // 发送资源的MIME为text/html，即文本类型
+    send_str(client, "\r\n");
+}
+
+/* 未找到文件或无法访问文件的响应报文 */ 
+void not_found(int client)
+{
+#if DEBUG_ENABLE
+        printf("not found.\r\n");
+#endif
+    // 4**的状态码表明错误是客户端引发的
+    send_str(client, "HTTP/1.0 404 NOT FOUND\r\n"); //404表示请求的资源不存在或服务器不提供此资源访问 
+    send_str(client, SERVER_STRING);
+    send_str(client, "Content-Type: text/html\r\n");
+    send_str(client, "\r\n");
+    send_str(client, "<HTML><TITLE>NOT FOUND</TITLE>"             // 发送一个简单页面用于提示
+                     "<BODY><P> the sever couldn't fullfill"
+                     "your request because the resource specified"
+                     "is unavailable or nonexistence."
+                     "</BODY></HTML>\r\n");
+}
+
+/* 错误请求响应报文*/
+void bad_request(int client)
+{
+#if DEBUG_ENABLE
+    printf("bad request.\r\n");
+#endif
+    // 服务器不支持对应的方法或者报文语法时，会发出错误请求报文
+    send_str(client, "HTTP/1.0 400 BAD REQUEST\r\n");  // 400表示请求错误或者请求的报文中存在语法错误
+    send_str(client, "Content-Type: text/html\r\n");
+    send_str(client, "\r\n");
+    send_str(client, "<P> Your browse sent a bad request,"
+            "such as a POST without a Content-Length.\r\n");
+}
+
+/*服务器内部异常响应报文*/
+void cannot_execute(int client)
+{
+#if DEBUG_ENABLE
+        printf("can not execute.\r\n");
+#endif
+    send_str(client, "HTTP/1.0 500 Internal Server Error\r\n"); // 5**为服务器错误，500表示服务器在执行请求时发生错误
+    send_str(client, "Content-Type: text/html\r\n");
+    send_str(client, "\r\n");
+    send_str(client, "<p>error prohibited CGI execution.\r\n");
+}
+```
+
